@@ -92,15 +92,22 @@ mod transport {
         Some(t.trim().to_owned()).filter(|t| !t.is_empty())
     }
 
+    /// gh on the PATH, else where Homebrew installs it: an app opened from the macOS Finder
+    /// gets a PATH without Homebrew.
+    const GH: [&str; 3] = ["gh", "/opt/homebrew/bin/gh", "/usr/local/bin/gh"];
+
     /// The token `gh auth token` prints, or None when gh is missing or fails.
     fn gh_token() -> Result<Option<String>, String> {
-        let Ok(mut gh) = Command::new("gh")
-            .args(["auth", "token"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
+        let spawn = |gh: &&str| {
+            Command::new(gh)
+                .args(["auth", "token"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()
+        };
+        let Some(mut gh) = GH.iter().find_map(spawn) else {
             return Ok(None);
         };
         let started = Instant::now();
