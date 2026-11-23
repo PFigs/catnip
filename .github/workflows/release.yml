@@ -17,7 +17,7 @@ jobs:
         include:
           - os: ubuntu-22.04
             asset: catnip-linux-x86_64.tar.gz
-          - os: macos-14
+          - os: macos-latest
             asset: Catnip-macos-arm64.zip
     runs-on: ${{ matrix.os }}
     steps:
