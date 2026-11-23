@@ -1,0 +1,56 @@
+# The tasks unset RUSTUP_TOOLCHAIN so that rust-toolchain.toml picks the toolchain.
+
+[tasks.app]
+description = "Start the native app"
+run = "env -u RUSTUP_TOOLCHAIN cargo run --release"
+
+[tasks.test]
+description = "Run the tests"
+run = "env -u RUSTUP_TOOLCHAIN cargo test"
+
+[tasks.web]
+description = "Build the web app with the Rune checkout in RUNE_DIR and serve it on http://localhost:8417"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+unset RUSTUP_TOOLCHAIN
+: "${RUNE_DIR:?Set RUNE_DIR to a Rune checkout at the commit Cargo.toml names}"
+if [[ $(rustup target list --installed) != *wasm32-unknown-unknown* ]]; then
+    echo "The wasm target is missing. Install it: rustup target add wasm32-unknown-unknown" >&2
+    exit 1
+fi
+want=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print }' Cargo.lock)
+if [[ $(wasm-bindgen --version 2>/dev/null) != "wasm-bindgen $want" ]]; then
+    echo "wasm-bindgen $want is missing. Install it: cargo install wasm-bindgen-cli --version $want --locked" >&2
+    exit 1
+fi
+"$RUNE_DIR/scripts/web-build.sh" catnip --out target/web
+cp assets/logo.svg target/web/logo.svg
+grep -q 'rel="icon"' target/web/index.html ||
+    sed -i '/<title>/i <link rel="icon" type="image/svg+xml" href="logo.svg">' target/web/index.html
+echo "Serving http://localhost:8417"
+python3 -m http.server 8417 --bind 127.0.0.1 -d target/web
+'''
+
+[tasks.desktop]
+description = "Install the desktop entry and the logo for the current user"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+data=${XDG_DATA_HOME:-$HOME/.local/share}
+# The names match the app id that src/lib.rs sets, so the desktop finds the logo for the window.
+install -Dm644 assets/logo.svg "$data/icons/hicolor/scalable/apps/catnip.svg"
+# A stale icon cache hides a new icon, so rebuild it when there is one.
+if [ -f "$data/icons/hicolor/icon-theme.cache" ]; then gtk-update-icon-cache -f -t -q "$data/icons/hicolor" || true; fi
+mkdir -p "$data/applications"
+cat > "$data/applications/catnip.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Catnip
+Exec="$PWD/target/release/catnip"
+Icon=catnip
+StartupWMClass=catnip
+Categories=Development;
+EOF
+echo "Installed $data/applications/catnip.desktop"
+'''
