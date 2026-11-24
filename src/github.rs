@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use crate::model::{Ci, Entry, MyReview, Pr, ReviewState, is_scope};
+use crate::model::{Ci, Entry, EntryKind, MyReview, Pr, ReviewState, is_scope};
 
 const GRAPHQL: &str = "https://api.github.com/graphql";
 /// Pages of 50 the PR list fetches at most.
@@ -259,30 +259,35 @@ pub struct Detail {
 pub fn detail(id: &str) -> Request {
     graphql(
         "query($id: ID!) { node(id: $id) { ... on PullRequest {
-          body createdAt baseRefName headRefName baseRefOid headRefOid
+          id viewerCanUpdate body createdAt baseRefName headRefName baseRefOid headRefOid
           viewerCanUpdateBranch mergeable
           author { __typename login }
           commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
           comments(last: 100) { pageInfo { hasPreviousPage }
-            nodes { author { __typename login } body createdAt } }
+            nodes { id viewerCanUpdate viewerCanDelete author { __typename login } body createdAt } }
           reviews(last: 100) { pageInfo { hasPreviousPage }
-            nodes { author { __typename login } body state submittedAt } }
+            nodes { id viewerCanUpdate author { __typename login } body state submittedAt } }
           reviewThreads(last: 100) { pageInfo { hasPreviousPage } nodes {
             id isResolved isOutdated viewerCanResolve viewerCanUnresolve viewerCanReply
             path line originalLine diffSide first: comments(first: 1) { nodes { diffHunk } }
             comments(last: 50) { pageInfo { hasPreviousPage }
-              nodes { author { __typename login } body createdAt url } } } } } } }",
+              nodes { id viewerCanUpdate viewerCanDelete author { __typename login } body createdAt url } } } } } } }",
         json!({ "id": id }),
     )
 }
 
-fn entry(n: &Value, at: &str, review: Option<ReviewState>) -> Entry {
+fn entry(n: &Value, at: &str, review: Option<ReviewState>, kind: EntryKind) -> Entry {
+    let flag = |at: &str| n[at].as_bool().unwrap_or_default();
     Entry {
         author: login(n),
         bot: n.pointer("/author/__typename").and_then(Value::as_str) == Some("Bot"),
         at: str_at(n, at),
         body: str_at(n, "/body"),
         review,
+        id: str_at(n, "/id"),
+        kind,
+        can_edit: flag("viewerCanUpdate"),
+        can_delete: flag("viewerCanDelete"),
     }
 }
 
@@ -295,11 +300,11 @@ pub fn parse_detail(text: &str) -> Result<Detail, String> {
     }
     let cut = |list: &Value| list["pageInfo"]["hasPreviousPage"].as_bool() == Some(true);
     let mut entries: Vec<Entry> = nodes(pr, "/comments/nodes")
-        .map(|n| entry(n, "/createdAt", None))
+        .map(|n| entry(n, "/createdAt", None, EntryKind::Comment))
         .collect();
     let reviews = nodes(pr, "/reviews/nodes").map(|n| {
         let state = review_state(&str_at(n, "/state")).unwrap_or(ReviewState::Commented);
-        entry(n, "/submittedAt", Some(state))
+        entry(n, "/submittedAt", Some(state), EntryKind::Review)
     });
     // A review with no text and no verdict holds line comments; the threads show those.
     entries
@@ -307,7 +312,7 @@ pub fn parse_detail(text: &str) -> Result<Detail, String> {
     entries.sort_by(|a, b| a.at.cmp(&b.at));
     let comments = |t: &Value| -> Vec<Entry> {
         nodes(t, "/comments/nodes")
-            .map(|n| entry(n, "/createdAt", None))
+            .map(|n| entry(n, "/createdAt", None, EntryKind::LineComment))
             .collect()
     };
     let line = |t: &Value, at: &str| t[at].as_u64().and_then(|l| u32::try_from(l).ok());
@@ -336,7 +341,7 @@ pub fn parse_detail(text: &str) -> Result<Detail, String> {
         ci: ci_at(pr, "/commits/nodes/0/commit/statusCheckRollup/state"),
         can_update_branch: pr["viewerCanUpdateBranch"].as_bool().unwrap_or_default(),
         conflicts: pr["mergeable"].as_str() == Some("CONFLICTING"),
-        description: entry(pr, "/createdAt", None),
+        description: entry(pr, "/createdAt", None, EntryKind::Description),
         entries,
         threads,
         truncated: ["comments", "reviews", "reviewThreads"]
@@ -500,7 +505,8 @@ pub fn parse_update_branch(text: &str) -> Result<(), String> {
 pub fn add_comment(pr_id: &str, body: &str) -> Request {
     graphql(
         "mutation($input: AddCommentInput!) { addComment(input: $input) {
-          commentEdge { node { author { __typename login } body createdAt } } } }",
+          commentEdge { node { id viewerCanUpdate viewerCanDelete
+            author { __typename login } body createdAt } } } }",
         json!({ "input": { "subjectId": pr_id, "body": body.trim() } }),
     )
 }
@@ -511,7 +517,7 @@ pub fn parse_add_comment(text: &str) -> Result<Entry, String> {
     if !node.is_object() {
         return Err("GitHub did not add the comment".into());
     }
-    Ok(entry(node, "/createdAt", None))
+    Ok(entry(node, "/createdAt", None, EntryKind::Comment))
 }
 
 /// A reply to the review thread `thread_id`, with `body` trimmed.
@@ -519,7 +525,7 @@ pub fn reply(thread_id: &str, body: &str) -> Request {
     graphql(
         "mutation($input: AddPullRequestReviewThreadReplyInput!) {
           addPullRequestReviewThreadReply(input: $input) {
-            comment { author { __typename login } body createdAt } } }",
+            comment { id viewerCanUpdate viewerCanDelete author { __typename login } body createdAt } } }",
         json!({ "input": { "pullRequestReviewThreadId": thread_id, "body": body.trim() } }),
     )
 }
@@ -530,7 +536,56 @@ pub fn parse_reply(text: &str) -> Result<Entry, String> {
     if !node.is_object() {
         return Err("GitHub did not add the reply".into());
     }
-    Ok(entry(node, "/createdAt", None))
+    Ok(entry(node, "/createdAt", None, EntryKind::LineComment))
+}
+
+/// Sets the text of the entry `id` of `kind` to `body`, trimmed.
+pub fn edit(kind: EntryKind, id: &str, body: &str) -> Request {
+    let (field, input, key) = match kind {
+        EntryKind::Description => (
+            "updatePullRequest",
+            "UpdatePullRequestInput",
+            "pullRequestId",
+        ),
+        EntryKind::Comment => ("updateIssueComment", "UpdateIssueCommentInput", "id"),
+        EntryKind::Review => (
+            "updatePullRequestReview",
+            "UpdatePullRequestReviewInput",
+            "pullRequestReviewId",
+        ),
+        EntryKind::LineComment => (
+            "updatePullRequestReviewComment",
+            "UpdatePullRequestReviewCommentInput",
+            "pullRequestReviewCommentId",
+        ),
+    };
+    let mut fields = json!({ "body": body.trim() });
+    fields[key] = json!(id);
+    graphql(
+        &format!("mutation($input: {input}!) {{ {field}(input: $input) {{ clientMutationId }} }}"),
+        json!({ "input": fields }),
+    )
+}
+
+/// Deletes the entry `id` of `kind`; None for a review or a description, which GitHub keeps.
+pub fn delete(kind: EntryKind, id: &str) -> Option<Request> {
+    let (field, input) = match kind {
+        EntryKind::Comment => ("deleteIssueComment", "DeleteIssueCommentInput"),
+        EntryKind::LineComment => (
+            "deletePullRequestReviewComment",
+            "DeletePullRequestReviewCommentInput",
+        ),
+        EntryKind::Description | EntryKind::Review => return None,
+    };
+    Some(graphql(
+        &format!("mutation($input: {input}!) {{ {field}(input: $input) {{ clientMutationId }} }}"),
+        json!({ "input": { "id": id } }),
+    ))
+}
+
+/// GitHub's answer to an edit or a delete: an error, or nothing to read.
+pub fn parse_done(text: &str) -> Result<(), String> {
+    data(text).map(|_| ())
 }
 
 /// The mutation that resolves a thread, or unresolves it, and its input type.
@@ -578,6 +633,7 @@ mod tests {
 
     fn detail_answer() -> Value {
         json!({ "data": { "node": {
+            "id": "PR_1", "viewerCanUpdate": true,
             "body": "Adds X.", "createdAt": "2026-01-01T00:00:00Z",
             "baseRefName": "main", "headRefName": "feat",
             "baseRefOid": "b0", "headRefOid": "h1",
@@ -585,11 +641,11 @@ mod tests {
             "author": { "__typename": "User", "login": "ann" },
             "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] },
             "comments": { "nodes": [
-                { "author": { "__typename": "Bot", "login": "ci" }, "body": "Build failed", "createdAt": "2026-01-02T00:00:00Z" },
-                { "author": null, "body": "Old note", "createdAt": "2026-01-04T00:00:00Z" },
+                { "id": "IC_1", "author": { "__typename": "Bot", "login": "ci" }, "body": "Build failed", "createdAt": "2026-01-02T00:00:00Z" },
+                { "id": "IC_2", "viewerCanUpdate": true, "viewerCanDelete": true, "author": null, "body": "Old note", "createdAt": "2026-01-04T00:00:00Z" },
             ] },
             "reviews": { "nodes": [
-                { "author": { "__typename": "User", "login": "bob" }, "body": "", "state": "CHANGES_REQUESTED", "submittedAt": "2026-01-03T00:00:00Z" },
+                { "id": "PRR_1", "viewerCanUpdate": true, "author": { "__typename": "User", "login": "bob" }, "body": "", "state": "CHANGES_REQUESTED", "submittedAt": "2026-01-03T00:00:00Z" },
                 { "author": { "__typename": "User", "login": "bob" }, "body": "", "state": "COMMENTED", "submittedAt": "2026-01-05T00:00:00Z" },
             ] },
             "reviewThreads": { "nodes": [
@@ -600,7 +656,7 @@ mod tests {
                   "path": "src/b.rs", "line": null, "originalLine": 7, "diffSide": "RIGHT",
                   "first": { "nodes": [{ "diffHunk": "@@ -6,1 +6,2 @@\n a\n+b" }] },
                   "comments": { "nodes": [
-                      { "author": { "__typename": "User", "login": "cyd" }, "body": "Gone now?", "createdAt": "2026-01-06T00:00:00Z", "url": "https://github.com/acme/api/pull/12#discussion_r2" },
+                      { "id": "RC_2", "viewerCanUpdate": true, "viewerCanDelete": true, "author": { "__typename": "User", "login": "cyd" }, "body": "Gone now?", "createdAt": "2026-01-06T00:00:00Z", "url": "https://github.com/acme/api/pull/12#discussion_r2" },
                   ] } },
                 { "isResolved": false, "path": "README.md", "line": null, "originalLine": null, "diffSide": "RIGHT",
                   "comments": { "nodes": [
@@ -610,6 +666,30 @@ mod tests {
                   "comments": { "nodes": [] } },
             ] },
         } } })
+    }
+
+    #[test]
+    fn detail_parse_reads_ids_and_edit_rights() {
+        let d = parse_detail(&detail_answer().to_string()).unwrap();
+        let rights = |e: &Entry| (e.id.clone(), e.kind, e.can_edit, e.can_delete);
+        let item = |id: &str, kind, edit, delete| (id.to_owned(), kind, edit, delete);
+        assert_eq!(
+            rights(&d.description),
+            item("PR_1", EntryKind::Description, true, false)
+        );
+        assert_eq!(
+            d.entries.iter().map(rights).collect::<Vec<_>>(),
+            [
+                item("IC_1", EntryKind::Comment, false, false),
+                item("PRR_1", EntryKind::Review, true, false),
+                item("IC_2", EntryKind::Comment, true, true),
+            ]
+        );
+        let thread = d.threads.iter().find(|t| t.id == "RT_2").unwrap();
+        assert_eq!(
+            rights(&thread.comments[0]),
+            item("RC_2", EntryKind::LineComment, true, true)
+        );
     }
 
     #[test]

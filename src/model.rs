@@ -257,8 +257,8 @@ pub fn is_scope(scope: &str) -> bool {
     }
 }
 
-/// One entry of a PR's conversation: the description, a comment or a review.
-#[derive(Clone, Debug, PartialEq)]
+/// One entry of a PR's conversation, or a comment of a review thread.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Entry {
     pub author: String,
     pub bot: bool,
@@ -266,6 +266,23 @@ pub struct Entry {
     pub body: String,
     /// The verdict of a review; `None` for a comment.
     pub review: Option<ReviewState>,
+    /// GitHub's id, which an edit or a delete names.
+    pub id: String,
+    pub kind: EntryKind,
+    /// GitHub lets the viewer edit it.
+    pub can_edit: bool,
+    /// GitHub lets the viewer delete it.
+    pub can_delete: bool,
+}
+
+/// What an entry is on GitHub, which picks the mutation that edits or deletes it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EntryKind {
+    Description,
+    #[default]
+    Comment,
+    Review,
+    LineComment,
 }
 
 /// The indexes of the entries under the description, newest first unless `oldest_first`.
@@ -404,6 +421,7 @@ mod tests {
             at: at.into(),
             body: String::new(),
             review,
+            ..Entry::default()
         }
     }
 

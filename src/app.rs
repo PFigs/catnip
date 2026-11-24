@@ -9,7 +9,7 @@ use rune_kit::{FileNode, FileTree, TreeModel};
 
 use crate::github::{self, Detail, Draft, Next, Rerun, Run, Thread, ThreadState, Viewer};
 use crate::keys;
-use crate::model::{self, Entry, MyReview, Pr, Quick, ReviewState, Row};
+use crate::model::{self, Entry, EntryKind, MyReview, Pr, Quick, ReviewState, Row};
 use crate::net::Net;
 use crate::store::{Settings, Store};
 
@@ -97,6 +97,26 @@ pub enum Msg {
         thread: String,
         answer: Result<Entry, String>,
     },
+    /// The entry `entry` of the PR `id` now reads `body`.
+    Edited {
+        id: String,
+        entry: String,
+        body: String,
+        answer: Result<(), String>,
+    },
+    Deleted {
+        id: String,
+        entry: String,
+        answer: Result<(), String>,
+    },
+}
+
+/// The text box that edits an entry of the open PR.
+pub struct Editing {
+    pub entry: String,
+    pub kind: EntryKind,
+    pub edit: TextEdit,
+    pub sending: bool,
 }
 
 /// A row of the list of threads, by its place in the detail: a thread or an entry of the
@@ -247,6 +267,10 @@ pub struct App {
     pub reply_edit: TextEdit,
     /// A reply is on the way.
     pub reply_sending: bool,
+    pub editing: Option<Editing>,
+    /// The entry whose Delete asks "Delete?", or is on the way.
+    pub deleting: Option<String>,
+    delete_sending: bool,
     /// The panel of threads on files the diff lacks is open.
     pub unplaced_open: bool,
     /// The file-tree column shows the list of threads in place of the files.
@@ -501,6 +525,9 @@ impl App {
             reply_to: None,
             reply_edit: TextEdit::new(""),
             reply_sending: false,
+            editing: None,
+            deleting: None,
+            delete_sending: false,
             unplaced_open: false,
             threads_pane: false,
             detail_due: false,
@@ -805,6 +832,13 @@ impl App {
             } => self.line_sent(&id, &head, draft, answer),
             Msg::Commented { id, answer } => self.commented(&id, answer),
             Msg::Replied { id, thread, answer } => self.replied(&id, &thread, answer),
+            Msg::Edited {
+                id,
+                entry,
+                body,
+                answer,
+            } => self.edited(&id, &entry, &body, answer),
+            Msg::Deleted { id, entry, answer } => self.deleted(&id, &entry, answer),
         }
     }
 
@@ -1294,6 +1328,152 @@ impl App {
         self.notify(format!("Replied on {name}"), false);
     }
 
+    /// The entry `id` of the open PR: its description, a conversation entry or a line comment.
+    pub fn find_entry(&self, id: &str) -> Option<&Entry> {
+        let d = self.current_detail()?;
+        std::iter::once(&d.description)
+            .chain(&d.entries)
+            .chain(d.threads.iter().flat_map(|t| &t.comments))
+            .find(|e| e.id == id)
+    }
+
+    /// Runs `change` on the open detail and on the cached copy of the PR `id`.
+    fn change_detail(&mut self, id: &str, change: impl Fn(&mut Detail)) {
+        if let Some(Ok(d)) = self.detail.as_mut() {
+            change(d);
+        }
+        for c in self.cache.iter_mut().filter(|c| c.id == id) {
+            change(&mut c.detail);
+        }
+    }
+
+    /// Opens the edit box of the entry `id` with its text, in place of another one.
+    pub fn start_edit(&mut self, id: &str) {
+        let Some(e) = self.find_entry(id).filter(|e| e.can_edit) else {
+            return;
+        };
+        let mut edit = TextEdit::new(&e.body);
+        edit.focused = true;
+        self.editing = Some(Editing {
+            entry: id.to_owned(),
+            kind: e.kind,
+            edit,
+            sending: false,
+        });
+        self.deleting = None;
+    }
+
+    pub fn cancel_edit(&mut self) {
+        self.editing = None;
+    }
+
+    /// Sends the text in the edit box, unless it is empty or a save is on the way.
+    pub fn save_edit(&mut self) {
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let Some(e) = self.editing.as_mut() else {
+            return;
+        };
+        let body = e.edit.text.trim().to_owned();
+        if body.is_empty() || e.sending {
+            return;
+        }
+        e.sending = true;
+        let req = github::edit(e.kind, &e.entry, &body);
+        let entry = e.entry.clone();
+        self.net.send(req, move |a| Msg::Edited {
+            id,
+            entry,
+            body,
+            answer: a.and_then(|t| github::parse_done(&t)),
+        });
+    }
+
+    /// Puts the saved text in place and closes the box. A failure keeps the box.
+    fn edited(&mut self, id: &str, entry: &str, body: &str, answer: Result<(), String>) {
+        if let Some(e) = self.editing.as_mut().filter(|e| e.entry == entry) {
+            e.sending = false;
+        }
+        if self.selected.as_deref() != Some(id) {
+            self.cache.retain(|c| c.id != id);
+            return;
+        }
+        let name = self.pr_name(id);
+        if let Err(e) = answer {
+            return self.notify(format!("Edit on {name} failed: {e}"), true);
+        }
+        self.change_detail(id, |d| {
+            let all = std::iter::once(&mut d.description)
+                .chain(d.entries.iter_mut())
+                .chain(d.threads.iter_mut().flat_map(|t| t.comments.iter_mut()));
+            for e in all.filter(|e| e.id == entry) {
+                e.body = body.to_owned();
+            }
+        });
+        if self.editing.as_ref().is_some_and(|e| e.entry == entry) {
+            self.editing = None;
+        }
+        self.notify(format!("Saved on {name}"), false);
+    }
+
+    /// The first click on Delete: the entry asks "Delete?".
+    pub fn ask_delete(&mut self, id: &str) {
+        if self.find_entry(id).is_some_and(|e| e.can_delete) {
+            self.deleting = Some(id.to_owned());
+        }
+    }
+
+    pub fn cancel_delete(&mut self) {
+        if !self.delete_sending {
+            self.deleting = None;
+        }
+    }
+
+    /// Sends the delete the entry asked about, unless one is on the way.
+    pub fn confirm_delete(&mut self) {
+        let (Some(id), Some(entry)) = (self.selected.clone(), self.deleting.clone()) else {
+            return;
+        };
+        let kind = self.find_entry(&entry).map(|e| e.kind);
+        let req = kind.and_then(|k| github::delete(k, &entry));
+        let Some(req) = req.filter(|_| !self.delete_sending) else {
+            return;
+        };
+        self.delete_sending = true;
+        self.net.send(req, move |a| Msg::Deleted {
+            id,
+            entry,
+            answer: a.and_then(|t| github::parse_done(&t)),
+        });
+    }
+
+    /// Takes the deleted entry out, and its thread when it was the last comment there.
+    fn deleted(&mut self, id: &str, entry: &str, answer: Result<(), String>) {
+        self.delete_sending = false;
+        if self.deleting.as_deref() == Some(entry) {
+            self.deleting = None;
+        }
+        if self.selected.as_deref() != Some(id) {
+            self.cache.retain(|c| c.id != id);
+            return;
+        }
+        let name = self.pr_name(id);
+        if let Err(e) = answer {
+            return self.notify(format!("Delete on {name} failed: {e}"), true);
+        }
+        self.change_detail(id, |d| {
+            d.entries.retain(|e| e.id != entry);
+            d.threads.retain_mut(|t| {
+                let before = t.comments.len();
+                t.comments.retain(|e| e.id != entry);
+                t.comments.len() == before || !t.comments.is_empty()
+            });
+        });
+        self.annotate();
+        self.notify(format!("Deleted on {name}"), false);
+    }
+
     /// Copies the link of the open PR, or its name such as `acme/api#12`, and says so in a toast.
     pub fn copy_pr(&mut self, link: bool, tx: &mut Tx) {
         let Some(pr) = self.current() else {
@@ -1604,6 +1784,8 @@ impl App {
         self.review_edit = TextEdit::new("");
         self.pr_comment = TextEdit::new("");
         self.cancel_reply();
+        self.editing = None;
+        self.deleting = None;
         self.unplaced_open = false;
         self.tree_search.focused = false;
         self.find_edit.focused = false;
@@ -2080,6 +2262,7 @@ impl App {
             || (self.find_edit.focused && self.find_open && detail)
             || (self.pr_comment.focused && self.conversation_open && detail)
             || (self.reply_edit.focused && self.reply_to.is_some() && detail)
+            || (self.editing.as_ref().is_some_and(|e| e.edit.focused) && detail)
     }
 
     pub fn set_pr_search(&mut self, text: &str) {
@@ -2394,6 +2577,15 @@ pub fn comment_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
 }
 
 /// The reply box: Escape closes it.
+/// The edit box: Escape closes it.
+pub fn edit_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
+    if ev.key != Key::Escape {
+        return false;
+    }
+    s.cancel_edit();
+    true
+}
+
 pub fn reply_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
     if ev.key != Key::Escape {
         return false;
@@ -2503,10 +2695,7 @@ mod tests {
             conflicts: false,
             description: Entry {
                 author: "ann".into(),
-                bot: false,
-                at: String::new(),
-                body: String::new(),
-                review: None,
+                ..Entry::default()
             },
             entries: Vec::new(),
             threads: Vec::new(),
@@ -4057,11 +4246,122 @@ diff --git a/Cargo.lock b/Cargo.lock
     fn note(author: &str, at: &str, body: &str) -> Entry {
         Entry {
             author: author.into(),
-            bot: false,
             at: at.into(),
             body: body.into(),
-            review: None,
+            ..Entry::default()
         }
+    }
+
+    /// PR A open, with a comment, a review and a line comment of the viewer, each "Old text".
+    fn with_mine() -> App {
+        let mut app = app(vec![pr("A", "a1")]);
+        app.select("A");
+        let mine = |id: &str, kind| Entry {
+            author: "me".into(),
+            body: "Old text".into(),
+            id: id.into(),
+            kind,
+            can_edit: true,
+            can_delete: kind != EntryKind::Review,
+            ..Entry::default()
+        };
+        let mut retry = thread("retry", "src/net/retry.rs", 1, false, false);
+        retry.comments.push(mine("RC_9", EntryKind::LineComment));
+        app.apply(Msg::Detail {
+            load: app.load,
+            answer: Ok(Detail {
+                entries: vec![
+                    mine("IC_9", EntryKind::Comment),
+                    mine("PRR_9", EntryKind::Review),
+                ],
+                threads: vec![retry],
+                ..detail("a1")
+            }),
+        });
+        app.apply(Msg::Diff {
+            load: app.load,
+            answer: Ok(TREE_PATCH.into()),
+        });
+        sent(&app);
+        app
+    }
+
+    /// The text of the entry `id` in the open detail, and in the cache.
+    fn texts_of(app: &App, id: &str) -> (Option<String>, Option<String>) {
+        let find = |d: &Detail| {
+            d.entries
+                .iter()
+                .chain(d.threads.iter().flat_map(|t| &t.comments))
+                .find(|e| e.id == id)
+                .map(|e| e.body.clone())
+        };
+        let cached = app.cache.iter().find(|c| c.id == "A").unwrap();
+        (find(app.current_detail().unwrap()), find(&cached.detail))
+    }
+
+    #[test]
+    fn an_edit_saves_the_text_and_a_failure_keeps_the_box() {
+        let mut app = with_mine();
+        app.start_edit("RC_9");
+        assert_eq!(app.editing.as_ref().unwrap().edit.text, "Old text");
+        app.editing.as_mut().unwrap().edit = TextEdit::new("  New text ");
+        app.save_edit();
+        app.save_edit();
+        let reqs = sent(&app);
+        assert_eq!(reqs.len(), 1, "a second save while the first is on the way");
+        let body = reqs[0].body.as_deref().unwrap();
+        assert!(
+            body.contains("updatePullRequestReviewComment(")
+                && body.contains("\"pullRequestReviewCommentId\":\"RC_9\"")
+                && body.contains("\"body\":\"New text\""),
+            "{body}"
+        );
+        let edited = |answer| Msg::Edited {
+            id: "A".into(),
+            entry: "RC_9".into(),
+            body: "New text".into(),
+            answer,
+        };
+        app.apply(edited(Err("Rate limited".into())));
+        assert!(app.editing.is_some(), "a failure keeps the box");
+        assert!(app.toast.as_ref().unwrap().failed);
+        assert_eq!(texts_of(&app, "RC_9").0.as_deref(), Some("Old text"));
+
+        app.save_edit();
+        assert_eq!(sent(&app).len(), 1, "the box saves again after a failure");
+        app.apply(edited(Ok(())));
+        assert!(app.editing.is_none());
+        let new = Some("New text".to_owned());
+        assert_eq!(texts_of(&app, "RC_9"), (new.clone(), new));
+    }
+
+    #[test]
+    fn a_delete_asks_first_then_removes_the_comment() {
+        let mut app = with_mine();
+        app.ask_delete("IC_9");
+        assert!(sent(&app).is_empty(), "the first click only asks");
+        app.confirm_delete();
+        let reqs = sent(&app);
+        assert_eq!(reqs.len(), 1);
+        let body = reqs[0].body.as_deref().unwrap();
+        assert!(
+            body.contains("deleteIssueComment(") && body.contains("\"id\":\"IC_9\""),
+            "{body}"
+        );
+        let deleted = |entry: &str| Msg::Deleted {
+            id: "A".into(),
+            entry: entry.into(),
+            answer: Ok(()),
+        };
+        app.apply(deleted("IC_9"));
+        assert_eq!(texts_of(&app, "IC_9"), (None, None));
+
+        app.ask_delete("RC_9");
+        app.confirm_delete();
+        sent(&app);
+        app.apply(deleted("RC_9"));
+        let d = app.current_detail().unwrap();
+        assert!(d.threads.is_empty(), "a thread with no comment left goes");
     }
 
     #[test]

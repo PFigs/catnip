@@ -164,7 +164,90 @@ fn gist(e: &Entry) -> String {
     format!("{}: {start}{more}", e.author)
 }
 
-fn entry(key: String, e: &Entry, now: i64, k: &Kit) -> El {
+/// Edit and Delete for an entry GitHub lets the viewer change, or the question a Delete asks.
+fn entry_actions(s: &App, e: &Entry, k: &Kit) -> El {
+    let mut actions = row().gap(4.0).items_center();
+    let small = |label: &str| {
+        Button::new(label)
+            .variant(ButtonVariant::GhostMuted)
+            .control_size(ControlSize::Mini)
+    };
+    if s.deleting.as_deref() == Some(e.id.as_str()) {
+        let question = text("Delete?").font(k.ty.small).color(k.c.text_muted);
+        let yes = small("Yes")
+            .on_press(|s: &mut App| s.confirm_delete())
+            .build(k)
+            .key("delete-yes");
+        let no = small("No")
+            .on_press(|s: &mut App| s.cancel_delete())
+            .build(k);
+        return actions.child(question).child(yes).child(no);
+    }
+    let editing = s.editing.as_ref().is_some_and(|x| x.entry == e.id);
+    if e.can_edit && !editing {
+        let id = e.id.clone();
+        let edit = small("Edit").on_press(move |s: &mut App| s.start_edit(&id));
+        actions = actions.child(edit.build(k).key("edit"));
+    }
+    if e.can_delete {
+        let id = e.id.clone();
+        let delete = small("Delete").on_press(move |s: &mut App| s.ask_delete(&id));
+        actions = actions.child(delete.build(k).key("delete"));
+    }
+    actions
+}
+
+/// The text of an entry, or its edit box while the viewer edits it.
+fn entry_body(s: &App, e: &Entry, k: &Kit) -> Option<El> {
+    match s.editing.as_ref().filter(|x| x.entry == e.id) {
+        Some(_) => Some(edit_box(s, k)),
+        None if e.body.is_empty() => None,
+        None => Some(prose(&e.body, k)),
+    }
+}
+
+/// The edit box: ⌘↵ saves, Escape closes.
+fn edit_box(s: &App, k: &Kit) -> El {
+    let Some(editing) = s.editing.as_ref() else {
+        return col();
+    };
+    let field = TextArea::new(&editing.edit)
+        .auto_grow(2, 16)
+        .on_edit(|s: &mut App| match s.editing.as_mut() {
+            Some(e) => &mut e.edit,
+            None => &mut s.reply_edit,
+        })
+        .on_key(app::edit_key)
+        .on_submit(|s: &mut App, _| s.save_edit())
+        .build(k)
+        .w_full()
+        .key("edit-field");
+    let save = match editing.sending {
+        true => "Saving…",
+        false => "Save",
+    };
+    let buttons = row()
+        .gap(8.0)
+        .justify_end()
+        .child(
+            Button::new("Cancel")
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut App| s.cancel_edit())
+                .build(k),
+        )
+        .child(
+            Button::new(save)
+                .variant(ButtonVariant::Submit)
+                .shortcut("cmd+enter")
+                .disabled(editing.sending)
+                .on_press(|s: &mut App| s.save_edit())
+                .build(k)
+                .key("save-edit"),
+        );
+    col().w_full().gap(8.0).child(field).child(buttons)
+}
+
+fn entry(s: &App, key: String, e: &Entry, now: i64, k: &Kit) -> El {
     let mut by = row().gap(8.0).items_center().child(
         text(e.author.clone())
             .font(k.ty.small_medium)
@@ -176,12 +259,15 @@ fn entry(key: String, e: &Entry, now: i64, k: &Kit) -> El {
     if e.bot {
         by = by.child(text("bot").font(k.ty.small).color(k.c.text_faint));
     }
-    by = by.child(text(age(&e.at, now)).font(k.ty.small).color(k.c.text_faint));
-    let mut card = col().key(key).w_full().gap(4.0).child(by);
-    if !e.body.is_empty() {
-        card = card.child(prose(&e.body, k));
+    by = by
+        .child(text(age(&e.at, now)).font(k.ty.small).color(k.c.text_faint))
+        .child(el().grow(1.0))
+        .child(entry_actions(s, e, k));
+    let card = col().key(key).w_full().gap(4.0).child(by);
+    match entry_body(s, e, k) {
+        Some(body) => card.child(body),
+        None => card,
     }
-    card
 }
 
 /// Markdown that a reader selects, and whose links open in the browser.
@@ -195,7 +281,7 @@ fn prose(body: &str, k: &Kit) -> El {
 }
 
 /// The description in a card, under its author and age.
-fn description(e: &Entry, now: i64, k: &Kit) -> El {
+fn description(s: &App, e: &Entry, now: i64, k: &Kit) -> El {
     let by = row()
         .gap(8.0)
         .items_center()
@@ -208,11 +294,11 @@ fn description(e: &Entry, now: i64, k: &Kit) -> El {
             text(format!("opened {}", age(&e.at, now)))
                 .font(k.ty.small)
                 .color(k.c.text_faint),
-        );
-    let body = match e.body.is_empty() {
-        true => text("No description.").font(k.ty.ui).color(k.c.text_faint),
-        false => prose(&e.body, k),
-    };
+        )
+        .child(el().grow(1.0))
+        .child(entry_actions(s, e, k));
+    let body = entry_body(s, e, k)
+        .unwrap_or_else(|| text("No description.").font(k.ty.ui).color(k.c.text_faint));
     panel(k, col().w_full().gap(8.0).child(by).child(body)).key("description")
 }
 
@@ -246,7 +332,7 @@ fn conversation(s: &App, d: &Detail, max_h: f32, k: &Kit) -> El {
         if i > 0 {
             comments = comments.child(el().w_full().h(1.0).fill(k.c.border_muted));
         }
-        comments = comments.child(entry(format!("entry-{n}"), &d.entries[n], now, k));
+        comments = comments.child(entry(s, format!("entry-{n}"), &d.entries[n], now, k));
     }
     let more = d.entries.len() - shown.len();
     if more > 0 {
@@ -266,7 +352,7 @@ fn conversation(s: &App, d: &Detail, max_h: f32, k: &Kit) -> El {
         .px(20.0)
         .pb(12.0)
         .gap(16.0)
-        .child(description(&d.description, now, k))
+        .child(description(s, &d.description, now, k))
         .child(comments_header(d.entries.len(), oldest_first, k))
         .child(first)
         .child(last);
@@ -730,7 +816,7 @@ fn thread(s: &App, n: usize, k: &Kit) -> El {
         body = body.child(code_made_on(&t.hunk, k));
     }
     for (i, c) in t.comments.iter().enumerate() {
-        body = body.child(entry(format!("c{i}"), c, now, k));
+        body = body.child(entry(s, format!("c{i}"), c, now, k));
     }
     let replying = s.reply_to.as_ref() == Some(&t.id);
     if replying {

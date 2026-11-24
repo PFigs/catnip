@@ -86,6 +86,10 @@ fn entry(author: &str, bot: bool, at: &str, review: Option<ReviewState>, body: &
         at: at.into(),
         body: body.into(),
         review,
+        id: format!("{author}-{at}"),
+        can_edit: author == "me",
+        can_delete: author == "me",
+        ..Entry::default()
     }
 }
 
@@ -290,6 +294,13 @@ pub fn sample(s: &mut App) {
                 "2026-11-14T11:00:00Z",
                 None,
                 "Does the web client need the same change?",
+            ),
+            entry(
+                "me",
+                false,
+                "2026-11-14T11:30:00Z",
+                None,
+                "Yes, the web client retries the same way.",
             ),
             entry(
                 "bob",

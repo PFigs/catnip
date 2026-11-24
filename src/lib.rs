@@ -1,3 +1,6 @@
+// The detail fixture of the GitHub tests nests deeper than `json!` expands by default.
+#![recursion_limit = "256"]
+
 pub mod app;
 pub mod cat;
 pub mod github;
