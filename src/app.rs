@@ -72,6 +72,18 @@ pub enum Msg {
     /// The answer to one re-run of that action.
     Reran(Result<(), String>),
     BranchUpdated(Result<(), String>),
+    /// The answer to the close of PR `id`, named `name`. `branch` is the ref to delete next.
+    Closed {
+        id: String,
+        name: String,
+        branch: Option<String>,
+        answer: Result<(), String>,
+    },
+    /// The answer to the delete of the branch of the closed PR `name`.
+    BranchDeleted {
+        name: String,
+        answer: Result<(), String>,
+    },
     /// The answer to a resolve of `thread` on PR `id`, or to an unresolve.
     Resolved {
         id: String,
@@ -272,6 +284,9 @@ pub struct App {
     /// The entry whose Delete asks "Delete?", or is on the way.
     pub deleting: Option<String>,
     delete_sending: bool,
+    /// The close dialog is open; true when it also deletes the branch.
+    pub closing: Option<bool>,
+    pub close_sending: bool,
     /// The panel of threads on files the diff lacks is open.
     pub unplaced_open: bool,
     /// The file-tree column shows the list of threads in place of the files.
@@ -529,6 +544,8 @@ impl App {
             reply_sending: false,
             editing: None,
             deleting: None,
+            closing: None,
+            close_sending: false,
             delete_sending: false,
             unplaced_open: false,
             threads_pane: false,
@@ -820,6 +837,19 @@ impl App {
                     }
                 }
             }
+            Msg::Closed {
+                id,
+                name,
+                branch,
+                answer,
+            } => self.closed(&id, name, branch, answer),
+            Msg::BranchDeleted { name, answer } => match answer {
+                Ok(()) => self.notify(format!("Closed {name} and deleted its branch"), false),
+                Err(e) => self.notify(
+                    format!("Closed {name}, but the branch delete failed: {e}"),
+                    true,
+                ),
+            },
             Msg::Resolved {
                 id,
                 thread,
@@ -1790,6 +1820,86 @@ impl App {
         self.load_ahead();
     }
 
+    /// The Close menu items: the dialog asks first. `delete_branch` also deletes the head branch.
+    pub fn ask_close(&mut self, delete_branch: bool) {
+        if self
+            .current_detail()
+            .is_some_and(|d| d.can_close && (!delete_branch || d.branch_ref.is_some()))
+        {
+            self.closing = Some(delete_branch);
+        }
+    }
+
+    pub fn cancel_close(&mut self) {
+        if !self.close_sending {
+            self.closing = None;
+        }
+    }
+
+    /// Sends the close the dialog asked about, unless one is on the way.
+    pub fn confirm_close(&mut self) {
+        let (Some(delete_branch), Some(pr), Some(d)) =
+            (self.closing, self.current(), self.current_detail())
+        else {
+            return;
+        };
+        if self.close_sending {
+            return;
+        }
+        let id = pr.id.clone();
+        let name = self.pr_name(&id);
+        let branch = d.branch_ref.clone().filter(|_| delete_branch);
+        self.close_sending = true;
+        self.net.send(github::close(&id), move |a| Msg::Closed {
+            id,
+            name,
+            branch,
+            answer: a.and_then(|t| github::parse_done(&t)),
+        });
+    }
+
+    /// Takes the closed PR off the list, opens the next one, and deletes the branch when asked.
+    fn closed(
+        &mut self,
+        id: &str,
+        name: String,
+        branch: Option<String>,
+        answer: Result<(), String>,
+    ) {
+        self.close_sending = false;
+        self.closing = None;
+        if let Err(e) = answer {
+            return self.notify(format!("Close of {name} failed: {e}"), true);
+        }
+        if self.selected.as_deref() == Some(id) {
+            let listed = self.listed();
+            let at = listed.iter().position(|&(_, i)| self.prs[i].id == id);
+            let next = at
+                .and_then(|at| {
+                    listed
+                        .get(at + 1)
+                        .or_else(|| at.checked_sub(1).and_then(|b| listed.get(b)))
+                })
+                .map(|&(_, i)| self.prs[i].id.clone());
+            match next {
+                Some(next) => self.select(&next),
+                None => self.close_pr(),
+            }
+        }
+        self.cache.retain(|c| c.id != id);
+        self.prs.retain(|p| p.id != id);
+        self.refilter();
+        match branch {
+            Some(branch) => self.net.send(github::delete_branch(&branch), move |a| {
+                Msg::BranchDeleted {
+                    name,
+                    answer: a.and_then(|t| github::parse_done(&t)),
+                }
+            }),
+            None => self.notify(format!("Closed {name}"), false),
+        }
+    }
+
     /// Leaves no PR open. Answers still on the way for the old one are dropped.
     fn close_pr(&mut self) {
         self.load += 1;
@@ -1806,6 +1916,7 @@ impl App {
         self.cancel_reply();
         self.editing = None;
         self.deleting = None;
+        self.closing = None;
         self.unplaced_open = false;
         self.tree_search.focused = false;
         self.find_edit.focused = false;
@@ -2466,6 +2577,7 @@ pub fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if s.settings_open
         || s.naming_group
+        || s.closing.is_some()
         || s.review.is_some()
         || s.composing.is_some()
         || s.typing_in_search()
@@ -2722,6 +2834,8 @@ mod tests {
             ci: None,
             can_update_branch: false,
             conflicts: false,
+            can_close: false,
+            branch_ref: None,
             description: Entry {
                 author: "ann".into(),
                 ..Entry::default()
@@ -4406,6 +4520,80 @@ diff --git a/Cargo.lock b/Cargo.lock
         app.apply(deleted("RC_9"));
         let d = app.current_detail().unwrap();
         assert!(d.threads.is_empty(), "a thread with no comment left goes");
+    }
+
+    /// Opens `id` with a detail that lets the viewer close it and delete its branch `REF_<id>`.
+    fn open_closable(app: &mut App, id: &str) {
+        app.select(id);
+        app.apply(Msg::Detail {
+            load: app.load,
+            answer: Ok(Detail {
+                can_close: true,
+                branch_ref: Some(format!("REF_{id}")),
+                ..detail("h")
+            }),
+        });
+        sent(app);
+    }
+
+    fn closed(id: &str, branch: bool, answer: Result<(), String>) -> Msg {
+        Msg::Closed {
+            id: id.into(),
+            name: format!("acme/api#{id}"),
+            branch: branch.then(|| format!("REF_{id}")),
+            answer,
+        }
+    }
+
+    fn bodies(reqs: &[Request]) -> Vec<&str> {
+        reqs.iter().filter_map(|r| r.body.as_deref()).collect()
+    }
+
+    #[test]
+    fn a_close_takes_the_pr_off_the_list_and_opens_the_next() {
+        let mut app = app(vec![pr("A", "a1"), pr("B", "b1"), pr("C", "c1")]);
+        let order: Vec<String> = shown_ids(&app).iter().map(|&s| s.into()).collect();
+        open_closable(&mut app, &order[1]);
+        app.ask_close(false);
+        assert!(sent(&app).is_empty(), "the menu item only asks");
+        app.confirm_close();
+        let reqs = sent(&app);
+        assert_eq!(reqs.len(), 1);
+        let body = bodies(&reqs)[0];
+        let id = format!("\"pullRequestId\":\"{}\"", order[1]);
+        assert!(
+            body.contains("closePullRequest(") && body.contains(&id),
+            "{body}"
+        );
+
+        app.apply(closed(&order[1], false, Ok(())));
+        assert_eq!(shown_ids(&app), [order[0].as_str(), order[2].as_str()]);
+        assert_eq!(app.selected.as_deref(), Some(order[2].as_str()));
+        assert!(app.closing.is_none());
+    }
+
+    #[test]
+    fn the_branch_goes_only_after_the_close() {
+        let mut app = app(vec![pr("A", "a1"), pr("B", "b1")]);
+        open_closable(&mut app, "A");
+        app.ask_close(true);
+        app.confirm_close();
+        assert_eq!(sent(&app).len(), 1, "the close goes alone");
+        app.apply(closed("A", true, Err("Rate limited".into())));
+        assert!(sent(&app).is_empty(), "a failed close keeps the branch");
+        assert!(app.pr("A").is_some() && app.toast.as_ref().unwrap().failed);
+
+        app.ask_close(true);
+        app.confirm_close();
+        sent(&app);
+        app.apply(closed("A", true, Ok(())));
+        let reqs = sent(&app);
+        let deletes: Vec<_> = bodies(&reqs)
+            .into_iter()
+            .filter(|b| b.contains("deleteRef("))
+            .collect();
+        assert_eq!(deletes.len(), 1);
+        assert!(deletes[0].contains("\"refId\":\"REF_A\""), "{}", deletes[0]);
     }
 
     #[test]

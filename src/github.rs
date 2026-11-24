@@ -250,6 +250,9 @@ pub struct Detail {
     pub can_update_branch: bool,
     /// The head and the base conflict.
     pub conflicts: bool,
+    pub can_close: bool,
+    /// The id of the head branch, when GitHub lets the viewer delete it.
+    pub branch_ref: Option<String>,
     pub description: Entry,
     /// Comments, and reviews with a verdict or text, in time order.
     pub entries: Vec<Entry>,
@@ -262,7 +265,7 @@ pub fn detail(id: &str) -> Request {
     graphql(
         "query($id: ID!) { node(id: $id) { ... on PullRequest {
           id viewerCanUpdate body createdAt baseRefName headRefName baseRefOid headRefOid
-          viewerCanUpdateBranch mergeable
+          viewerCanUpdateBranch mergeable viewerCanClose viewerCanDeleteHeadRef headRef { id }
           author { __typename login }
           commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
           comments(last: 100) { pageInfo { hasPreviousPage }
@@ -343,6 +346,12 @@ pub fn parse_detail(text: &str) -> Result<Detail, String> {
         ci: ci_at(pr, "/commits/nodes/0/commit/statusCheckRollup/state"),
         can_update_branch: pr["viewerCanUpdateBranch"].as_bool().unwrap_or_default(),
         conflicts: pr["mergeable"].as_str() == Some("CONFLICTING"),
+        can_close: pr["viewerCanClose"].as_bool().unwrap_or_default(),
+        branch_ref: pr["viewerCanDeleteHeadRef"]
+            .as_bool()
+            .unwrap_or_default()
+            .then(|| str_at(pr, "/headRef/id"))
+            .filter(|id| !id.is_empty()),
         description: entry(pr, "/createdAt", None, EntryKind::Description),
         entries,
         threads,
@@ -585,7 +594,23 @@ pub fn delete(kind: EntryKind, id: &str) -> Option<Request> {
     ))
 }
 
-/// GitHub's answer to an edit or a delete: an error, or nothing to read.
+pub fn close(pr_id: &str) -> Request {
+    graphql(
+        "mutation($input: ClosePullRequestInput!) {
+          closePullRequest(input: $input) { clientMutationId } }",
+        json!({ "input": { "pullRequestId": pr_id } }),
+    )
+}
+
+/// Deletes the branch whose ref id is `ref_id`.
+pub fn delete_branch(ref_id: &str) -> Request {
+    graphql(
+        "mutation($input: DeleteRefInput!) { deleteRef(input: $input) { clientMutationId } }",
+        json!({ "input": { "refId": ref_id } }),
+    )
+}
+
+/// GitHub's answer to an edit, a delete or a close: an error, or nothing to read.
 pub fn parse_done(text: &str) -> Result<(), String> {
     data(text).map(|_| ())
 }
@@ -640,6 +665,7 @@ mod tests {
             "baseRefName": "main", "headRefName": "feat",
             "baseRefOid": "b0", "headRefOid": "h1",
             "viewerCanUpdateBranch": true, "mergeable": "CONFLICTING",
+            "viewerCanClose": true, "viewerCanDeleteHeadRef": true, "headRef": { "id": "REF_1" },
             "author": { "__typename": "User", "login": "ann" },
             "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": "FAILURE" } } }] },
             "comments": { "nodes": [
@@ -691,6 +717,10 @@ mod tests {
         assert_eq!(
             rights(&thread.comments[0]),
             item("RC_2", EntryKind::LineComment, true, true)
+        );
+        assert_eq!(
+            (d.can_close, d.branch_ref.as_deref()),
+            (true, Some("REF_1"))
         );
     }
 
@@ -1201,6 +1231,8 @@ mod tests {
                 "the thread has no {field}"
             );
         }
+        known("ClosePullRequestInput", &variables(&close("PR"))["input"]);
+        known("DeleteRefInput", &variables(&delete_branch("REF"))["input"]);
         known(
             "AddCommentInput",
             &variables(&add_comment("PR", "b"))["input"],
@@ -1212,6 +1244,8 @@ mod tests {
             );
         };
         has("AddCommentPayload", "commentEdge");
+        has("PullRequest", "viewerCanClose");
+        has("PullRequest", "viewerCanDeleteHeadRef");
         has("IssueCommentEdge", "node");
         for field in ["author", "body", "createdAt"] {
             has("IssueComment", field);

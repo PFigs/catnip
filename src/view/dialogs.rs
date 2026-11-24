@@ -102,6 +102,53 @@ fn name_group(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+/// Asks before the close of the open PR, and before the delete of its branch.
+fn close_pr(s: &App, delete_branch: bool, k: &Kit, layer: &mut Vec<El>) {
+    let (Some(pr), Some(d)) = (s.current(), s.detail.as_ref().and_then(|d| d.as_ref().ok())) else {
+        return;
+    };
+    let mut ask = format!("Close {}#{} without a merge.", pr.repo, pr.number);
+    if delete_branch {
+        ask += &format!(" Then delete the branch {}.", d.head_branch);
+    }
+    let (title, label) = match (delete_branch, s.close_sending) {
+        (_, true) => ("Close PR", "Closing…"),
+        (true, false) => ("Close and delete branch", "Close and delete"),
+        (false, false) => ("Close PR", "Close"),
+    };
+    let buttons = row()
+        .gap(8.0)
+        .justify_end()
+        .child(
+            Button::new("Cancel")
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut App| s.cancel_close())
+                .build(k),
+        )
+        .child(
+            Button::new(label)
+                .variant(ButtonVariant::Danger)
+                .disabled(s.close_sending)
+                .on_press(|s: &mut App| s.confirm_close())
+                .build(k)
+                .key("confirm-close"),
+        );
+    Dialog::new("close-pr", title)
+        .open(true)
+        .width(420.0)
+        .fit()
+        .child(
+            col()
+                .gap(12.0)
+                .px(16.0)
+                .pb(16.0)
+                .child(text(ask).font(k.ty.small).color(k.c.text_muted).wrap())
+                .child(buttons),
+        )
+        .on_close(|s: &mut App| s.cancel_close())
+        .build(k, layer);
+}
+
 fn group_row(name: &str, authors: &BTreeSet<String>, k: &Kit) -> El {
     let gone = name.to_owned();
     let remove = IconButton::new(&glyphs::CLOSE)
@@ -247,6 +294,8 @@ pub fn build(s: &App, k: &Kit, layer: &mut Vec<El>) {
         composer(s, state, k, layer);
     } else if s.naming_group {
         name_group(s, k, layer);
+    } else if let Some(delete_branch) = s.closing {
+        close_pr(s, delete_branch, k, layer);
     } else if s.keys_open {
         key_sheet(k, layer);
     }

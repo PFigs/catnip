@@ -281,6 +281,8 @@ pub fn sample(s: &mut App) {
         ci: Some(Ci::Passes),
         can_update_branch: false,
         conflicts: false,
+        can_close: true,
+        branch_ref: Some("REF_4210".into()),
         description: entry("ann", false, "2026-11-14T09:00:00Z", None, DESCRIPTION),
         entries: vec![
             entry(

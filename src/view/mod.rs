@@ -52,6 +52,7 @@ static SORT: Icon = Icon {
 const CI_MARK: f32 = 14.0;
 /// The CI menu is wide enough for the second line of "Update branch".
 const CI_MENU_WIDTH: f32 = 320.0;
+const REVIEW_MENU_WIDTH: f32 = 240.0;
 /// How far past the switch point the toolbar changes between its tight and full forms.
 const SWITCH_MARGIN: f32 = 4.0;
 /// The room a button icon takes with its gap to the label.
@@ -566,10 +567,22 @@ fn review_controls(s: &App, k: &Kit, tight: bool, layer: &mut Vec<El>) -> El {
                 s.copy_pr(link, tx);
             })
     };
+    let detail = s.detail.as_ref().and_then(|d| d.as_ref().ok());
+    let can_close = detail.is_some_and(|d| d.can_close);
+    let can_delete_branch = can_close && detail.is_some_and(|d| d.branch_ref.is_some());
+    let close_item = |label: &str, delete_branch: bool, can: bool| {
+        MenuItem::new(label)
+            .disabled(!can)
+            .on_select(move |s: &mut App| {
+                s.review_menu = false;
+                s.ask_close(delete_branch);
+            })
+    };
     let menu =
         Menu::new("review")
             .trigger(trigger)
             .open(s.review_menu)
+            .min_width(REVIEW_MENU_WIDTH)
             .item(
                 MenuItem::new("Comment…")
                     .shortcut("c")
@@ -590,6 +603,13 @@ fn review_controls(s: &App, k: &Kit, tight: bool, layer: &mut Vec<El>) -> El {
             ))
             .item(copy("Copy link", "cmd+shift+c", true))
             .item(copy("Copy number", "cmd+c", false))
+            .separator()
+            .item(close_item("Close PR…", false, can_close))
+            .item(close_item(
+                "Close and delete branch…",
+                true,
+                can_delete_branch,
+            ))
             .on_close(|s: &mut App| s.review_menu = false)
             .build(k, layer);
     row()
