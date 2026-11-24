@@ -14,8 +14,8 @@ name = "catnip"
 path = "src/main.rs"
 
 [dependencies]
-rune = { git = "https://github.com/silvixp/rune", rev = "7de66314c329e97a12420a9ebc09879fc31185af" }
-rune-kit = { git = "https://github.com/silvixp/rune", rev = "7de66314c329e97a12420a9ebc09879fc31185af", features = ["markdown"] }
+rune = { git = "https://github.com/PFigs/rune", rev = "aba61d11a85c8556c80ee7dd125a6e381c242c2c" }
+rune-kit = { git = "https://github.com/PFigs/rune", rev = "aba61d11a85c8556c80ee7dd125a6e381c242c2c", features = ["markdown"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -29,8 +29,8 @@ web-sys = { version = "0.3", features = ["Window", "Storage", "Request", "Reques
 js-sys = "0.3"
 
 [patch.crates-io]
-wgpu-hal = { git = "https://github.com/silvixp/rune", rev = "7de66314c329e97a12420a9ebc09879fc31185af" }
-winit = { git = "https://github.com/silvixp/rune", rev = "7de66314c329e97a12420a9ebc09879fc31185af" }
-parley_engine = { git = "https://github.com/silvixp/rune", rev = "7de66314c329e97a12420a9ebc09879fc31185af" }
-accesskit_windows = { git = "https://github.com/silvixp/rune", rev = "7de66314c329e97a12420a9ebc09879fc31185af" }
-accesskit_macos = { git = "https://github.com/silvixp/rune", rev = "7de66314c329e97a12420a9ebc09879fc31185af" }
+wgpu-hal = { git = "https://github.com/PFigs/rune", rev = "aba61d11a85c8556c80ee7dd125a6e381c242c2c" }
+winit = { git = "https://github.com/PFigs/rune", rev = "aba61d11a85c8556c80ee7dd125a6e381c242c2c" }
+parley_engine = { git = "https://github.com/PFigs/rune", rev = "aba61d11a85c8556c80ee7dd125a6e381c242c2c" }
+accesskit_windows = { git = "https://github.com/PFigs/rune", rev = "aba61d11a85c8556c80ee7dd125a6e381c242c2c" }
+accesskit_macos = { git = "https://github.com/PFigs/rune", rev = "aba61d11a85c8556c80ee7dd125a6e381c242c2c" }
