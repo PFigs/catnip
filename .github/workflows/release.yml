@@ -54,7 +54,7 @@ jobs:
           <dict>
             <key>CFBundleName</key><string>Catnip</string>
             <key>CFBundleDisplayName</key><string>Catnip</string>
-            <key>CFBundleIdentifier</key><string>io.github.silvixp.catnip</string>
+            <key>CFBundleIdentifier</key><string>io.github.pfigs.catnip</string>
             <key>CFBundleExecutable</key><string>catnip</string>
             <key>CFBundleIconFile</key><string>catnip</string>
             <key>CFBundlePackageType</key><string>APPL</string>

@@ -19,7 +19,7 @@ It also takes a classic token with `repo` and `read:org` from `GITHUB_TOKEN`.
 macOS, Apple Silicon:
 
 ```sh
-curl -fsSL https://github.com/silvixp/catnip/releases/latest/download/Catnip-macos-arm64.zip -o /tmp/Catnip.zip && ditto -x -k /tmp/Catnip.zip /Applications && open /Applications/Catnip.app
+curl -fsSL https://github.com/PFigs/catnip/releases/latest/download/Catnip-macos-arm64.zip -o /tmp/Catnip.zip && ditto -x -k /tmp/Catnip.zip /Applications && open /Applications/Catnip.app
 ```
 
 The app is not signed. If you download the zip in a browser instead, run
@@ -28,7 +28,7 @@ The app is not signed. If you download the zip in a browser instead, run
 Linux, x86_64:
 
 ```sh
-curl -fsSL https://github.com/silvixp/catnip/releases/latest/download/catnip-linux-x86_64.tar.gz | tar -xz -C ~/.local/share && ~/.local/share/catnip/catnip
+curl -fsSL https://github.com/PFigs/catnip/releases/latest/download/catnip-linux-x86_64.tar.gz | tar -xz -C ~/.local/share && ~/.local/share/catnip/catnip
 ```
 
 ## Build from source
@@ -38,7 +38,7 @@ You need [Rust](https://rustup.rs). On macOS you also need the Xcode command lin
 `sudo apt-get install libxkbcommon-dev libwayland-dev`.
 
 ```sh
-git clone https://github.com/silvixp/catnip && cd catnip && cargo run --release
+git clone https://github.com/PFigs/catnip && cd catnip && cargo run --release
 ```
 
 On Linux, `mise run desktop` installs a launcher and the icon.

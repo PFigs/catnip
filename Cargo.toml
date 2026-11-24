@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "A desktop app to review GitHub pull requests from the keyboard"
-repository = "https://github.com/silvixp/catnip"
+repository = "https://github.com/PFigs/catnip"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
