@@ -41,6 +41,11 @@ static GEAR: Icon = Icon {
     view: 16.0,
     body: r#"<circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M8 1.5V3.5M8 12.5V14.5M1.5 8H3.5M12.5 8H14.5M3.4 3.4L4.8 4.8M11.2 11.2L12.6 12.6M3.4 12.6L4.8 11.2M11.2 4.8L12.6 3.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>"#,
 };
+static SORT: Icon = Icon {
+    name: "pr-sort",
+    view: 16.0,
+    body: r#"<path d="M3 4.5H13M3 8H10M3 11.5H7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/>"#,
+};
 
 /// The size of a CI mark.
 const CI_MARK: f32 = 14.0;
@@ -545,7 +550,7 @@ pub fn view(s: &App, cx: &mut Cx<App>) -> El {
         .sidebar(
             &s.sidebar,
             |s: &mut App| &mut s.sidebar,
-            drawer::view(s, &k),
+            drawer::view(s, &k, &mut layer),
         )
         .toolbar(toolbar)
         .titlebar_inset(cx.titlebar_inset())

@@ -1,8 +1,10 @@
 //! The data the app shows and the rules that sort and filter it. No I/O here.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
 
 use rune_kit::search::Fold;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReviewState {
@@ -30,6 +32,9 @@ pub struct Pr {
     pub head: String,
     /// ISO 8601 time of the head commit; sorts as text.
     pub last_commit: String,
+    /// ISO 8601 times of the last change and of the opening; they sort as text.
+    pub updated: String,
+    pub created: String,
     pub additions: u64,
     pub deletions: u64,
     /// The viewer's last ten reviews, oldest first.
@@ -91,6 +96,61 @@ pub fn mark(pr: &Pr, me: &str) -> Mark {
     } else {
         Mark::NewCommits(verdict)
     }
+}
+
+/// The order of the PR list and of its repository groups.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Sort {
+    #[default]
+    LastCommit,
+    Updated,
+    Newest,
+    Oldest,
+    Status,
+}
+
+impl Sort {
+    pub const ALL: [Sort; 5] = [
+        Sort::LastCommit,
+        Sort::Updated,
+        Sort::Newest,
+        Sort::Oldest,
+        Sort::Status,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::LastCommit => "Last commit",
+            Sort::Updated => "Last updated",
+            Sort::Newest => "Newest",
+            Sort::Oldest => "Oldest",
+            Sort::Status => "Review status",
+        }
+    }
+}
+
+/// The place of a PR in the review-status sort: the viewer's work first, their own PRs last.
+fn status_rank(pr: &Pr, me: &str) -> u8 {
+    match mark(pr, me) {
+        Mark::Todo => 0,
+        Mark::NewCommits(_) => 1,
+        Mark::Acted(ReviewState::ChangesRequested) => 2,
+        Mark::Acted(ReviewState::Commented) => 3,
+        Mark::Acted(ReviewState::Approved) => 4,
+        Mark::Mine => 5,
+    }
+}
+
+/// The order of two PRs under `sort`. Ties go to the newest commit.
+pub fn compare(sort: Sort, me: &str, a: &Pr, b: &Pr) -> Ordering {
+    let order = match sort {
+        Sort::LastCommit => Ordering::Equal,
+        Sort::Updated => b.updated.cmp(&a.updated),
+        Sort::Newest => b.created.cmp(&a.created),
+        Sort::Oldest => a.created.cmp(&b.created),
+        Sort::Status => status_rank(a, me).cmp(&status_rank(b, me)),
+    };
+    order.then_with(|| b.last_commit.cmp(&a.last_commit))
 }
 
 /// Whether the viewer approved `head` and requested no changes after that approval.
@@ -179,8 +239,17 @@ pub fn drawer_rows(
     shown: &[usize],
     folded: &BTreeSet<String>,
     searching: bool,
+    sort: Sort,
+    me: &str,
 ) -> Vec<Row> {
-    let repos = newest_first(prs, |pr| &pr.repo);
+    let mut all: Vec<&Pr> = prs.iter().collect();
+    all.sort_by(|a, b| compare(sort, me, a, b));
+    let mut repos: Vec<&str> = Vec::new();
+    for pr in all {
+        if !repos.contains(&pr.repo.as_str()) {
+            repos.push(&pr.repo);
+        }
+    }
     if repos.len() < 2 {
         return shown.iter().map(|&i| Row::Pr(i)).collect();
     }
@@ -230,13 +299,14 @@ pub fn visible(
     quick: Quick,
     authors: &BTreeSet<String>,
     search: &str,
+    sort: Sort,
 ) -> Vec<usize> {
     let mut keep: Vec<usize> = (0..prs.len())
         .filter(|&i| authors.is_empty() || authors.contains(&prs[i].author))
         .filter(|&i| quick.keeps(mark(&prs[i], me)))
         .filter(|&i| found(&prs[i], search))
         .collect();
-    keep.sort_by(|&a, &b| prs[b].last_commit.cmp(&prs[a].last_commit));
+    keep.sort_by(|&a, &b| compare(sort, me, &prs[a], &prs[b]));
     keep
 }
 
@@ -398,6 +468,8 @@ mod tests {
             draft: false,
             head: "head".into(),
             last_commit: last_commit.into(),
+            updated: String::new(),
+            created: String::new(),
             additions: 0,
             deletions: 0,
             my_reviews: reviews
@@ -434,6 +506,56 @@ mod tests {
             pr("c1", "mid", "2026-05-01T00:00:00Z", &[]),
         ];
         assert_eq!(author_chips(&prs, &BTreeSet::new()), ["busy", "mid", "old"]);
+    }
+
+    #[test]
+    fn each_sort_orders_the_prs_and_the_groups() {
+        let at = |day: u8| format!("2026-01-{day:02}T00:00:00Z");
+        let listed = |id: &str, repo: &str, author: &str, days: [u8; 3], review| Pr {
+            repo: repo.into(),
+            last_commit: at(days[0]),
+            updated: at(days[1]),
+            created: at(days[2]),
+            ..pr(id, author, "", review)
+        };
+        let prs = [
+            // To review.
+            listed("a", "r1", "ann", [3, 2, 2], &[]),
+            // Yours.
+            listed("b", "r2", "me", [4, 5, 3], &[]),
+            // Approved at the head.
+            listed(
+                "c",
+                "r1",
+                "bob",
+                [2, 4, 4],
+                &[(ReviewState::Approved, "head")],
+            ),
+            // New commits since your request for changes.
+            listed(
+                "d",
+                "r2",
+                "cyd",
+                [1, 3, 1],
+                &[(ReviewState::ChangesRequested, "old")],
+            ),
+        ];
+        let rows = |sort| {
+            let shown = visible(&prs, "me", Quick::All, &BTreeSet::new(), "", sort);
+            drawer_rows(&prs, &shown, &BTreeSet::new(), false, sort, "me")
+                .into_iter()
+                .map(|r| match r {
+                    Row::Header { repo, .. } => repo,
+                    Row::Pr(i) => prs[i].id.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(rows(Sort::LastCommit), "r2 b d r1 a c");
+        assert_eq!(rows(Sort::Updated), "r2 b d r1 c a");
+        assert_eq!(rows(Sort::Newest), "r1 c a r2 b d");
+        assert_eq!(rows(Sort::Oldest), "r2 d b r1 a c");
+        assert_eq!(rows(Sort::Status), "r1 a c r2 d b");
     }
 
     #[test]
@@ -498,20 +620,41 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(
-            ids(visible(&prs, "me", Quick::ToReview, &none, "")),
+            ids(visible(
+                &prs,
+                "me",
+                Quick::ToReview,
+                &none,
+                "",
+                Sort::LastCommit
+            )),
             ["todo", "pushed"]
         );
         assert_eq!(
-            ids(visible(&prs, "me", Quick::ActedOn, &none, "")),
+            ids(visible(
+                &prs,
+                "me",
+                Quick::ActedOn,
+                &none,
+                "",
+                Sort::LastCommit
+            )),
             ["acted"]
         );
         assert_eq!(
-            ids(visible(&prs, "me", Quick::All, &none, "")),
+            ids(visible(&prs, "me", Quick::All, &none, "", Sort::LastCommit)),
             ["mine", "todo", "acted", "pushed"]
         );
         let ann = BTreeSet::from(["ann".to_owned()]);
         assert_eq!(
-            ids(visible(&prs, "me", Quick::ToReview, &ann, "")),
+            ids(visible(
+                &prs,
+                "me",
+                Quick::ToReview,
+                &ann,
+                "",
+                Sort::LastCommit
+            )),
             ["pushed"]
         );
     }
@@ -534,10 +677,17 @@ mod tests {
         let prs = [fix, web, numbered, acted];
         let none = BTreeSet::new();
         let found = |query: &str, authors: &BTreeSet<String>| {
-            visible(&prs, "me", Quick::ToReview, authors, query)
-                .into_iter()
-                .map(|i| prs[i].id.as_str())
-                .collect::<Vec<_>>()
+            visible(
+                &prs,
+                "me",
+                Quick::ToReview,
+                authors,
+                query,
+                Sort::LastCommit,
+            )
+            .into_iter()
+            .map(|i| prs[i].id.as_str())
+            .collect::<Vec<_>>()
         };
         assert_eq!(found("resume", &none), ["fix"]);
         assert_eq!(found("FIX upload", &none), ["fix"]);

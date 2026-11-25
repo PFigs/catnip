@@ -144,7 +144,7 @@ pub fn prs(scopes: &[String], me: &str, after: Option<&str>) -> Request {
           search(query: $q, type: ISSUE, first: 50, after: $after) {
             pageInfo { hasNextPage endCursor }
             nodes { ... on PullRequest {
-              id number title url isDraft additions deletions headRefOid
+              id number title url isDraft additions deletions headRefOid updatedAt createdAt
               headRefName baseRefName isCrossRepository
               repository { nameWithOwner } author { login }
               commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
@@ -181,6 +181,8 @@ pub fn parse_prs(text: &str, page: usize) -> Result<(Vec<Pr>, Next), String> {
             draft: n["isDraft"].as_bool().unwrap_or_default(),
             head: str_at(n, "/headRefOid"),
             last_commit: str_at(n, "/commits/nodes/0/commit/committedDate"),
+            updated: str_at(n, "/updatedAt"),
+            created: str_at(n, "/createdAt"),
             additions: n["additions"].as_u64().unwrap_or_default(),
             deletions: n["deletions"].as_u64().unwrap_or_default(),
             my_reviews: nodes(n, "/reviews/nodes")

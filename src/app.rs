@@ -9,7 +9,7 @@ use rune_kit::{FileNode, FileTree, TreeModel};
 
 use crate::github::{self, Detail, Draft, Next, Rerun, Run, Thread, ThreadState, Viewer};
 use crate::keys;
-use crate::model::{self, Entry, EntryKind, MyReview, Pr, Quick, ReviewState, Row};
+use crate::model::{self, Entry, EntryKind, MyReview, Pr, Quick, ReviewState, Row, Sort};
 use crate::net::Net;
 use crate::store::{Settings, Store};
 
@@ -227,6 +227,7 @@ pub struct App {
     pub comment_edit: TextEdit,
     pub review_menu: bool,
     pub ci_menu: bool,
+    pub sort_menu: bool,
     pub more_authors: bool,
     /// The dialog that names a new author group is open.
     pub naming_group: bool,
@@ -505,6 +506,7 @@ impl App {
             comment_edit: TextEdit::new(""),
             review_menu: false,
             ci_menu: false,
+            sort_menu: false,
             more_authors: false,
             naming_group: false,
             group_edit: TextEdit::new(""),
@@ -1673,18 +1675,36 @@ impl App {
             self.quick,
             &self.picked,
             &self.pr_search.text,
+            self.settings.sort,
         );
         let open = self
             .selected
             .as_ref()
             .and_then(|id| self.prs.iter().position(|p| &p.id == id));
         if let Some(i) = open.filter(|i| !shown.contains(i)) {
-            let at = shown.partition_point(|&j| self.prs[j].last_commit > self.prs[i].last_commit);
+            let sort = self.settings.sort;
+            let at = shown.partition_point(|&j| {
+                model::compare(sort, &self.me, &self.prs[j], &self.prs[i]).is_lt()
+            });
             shown.insert(at, i);
         }
         let searching = !self.pr_search.text.trim().is_empty();
-        self.rows = model::drawer_rows(&self.prs, &shown, &self.settings.folded, searching);
+        self.rows = model::drawer_rows(
+            &self.prs,
+            &shown,
+            &self.settings.folded,
+            searching,
+            self.settings.sort,
+            &self.me,
+        );
         self.shown = shown;
+    }
+
+    pub fn set_sort(&mut self, sort: Sort) {
+        self.sort_menu = false;
+        self.settings.sort = sort;
+        self.store.save(&self.settings);
+        self.refilter();
     }
 
     pub fn set_quick(&mut self, q: Quick) {
@@ -2598,7 +2618,14 @@ pub fn reply_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
 /// empties the field. Both leave the field.
 pub fn pr_search_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if enter(ev) {
-        let kept = model::visible(&s.prs, &s.me, s.quick, &s.picked, &s.pr_search.text);
+        let kept = model::visible(
+            &s.prs,
+            &s.me,
+            s.quick,
+            &s.picked,
+            &s.pr_search.text,
+            s.settings.sort,
+        );
         let first = s.rows.iter().find_map(|r| match r {
             Row::Pr(i) if kept.contains(i) => Some(s.prs[*i].id.clone()),
             _ => None,
@@ -2674,6 +2701,8 @@ mod tests {
             draft: false,
             head: head.into(),
             last_commit: "2026-11-14T10:00:00Z".into(),
+            updated: String::new(),
+            created: String::new(),
             additions: 1,
             deletions: 1,
             my_reviews: Vec::new(),
@@ -2793,6 +2822,21 @@ diff --git a/Cargo.lock b/Cargo.lock
 
     fn shown_ids(app: &App) -> Vec<&str> {
         app.shown.iter().map(|&i| app.prs[i].id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_sort_reorders_the_drawer_and_is_saved() {
+        let created = |id: &str, day: &str| Pr {
+            created: format!("2026-01-{day}T00:00:00Z"),
+            ..pr(id, "h")
+        };
+        let mut app = app(vec![created("A", "01"), created("B", "02")]);
+        app.quick = Quick::All;
+        app.set_sort(Sort::Oldest);
+        assert_eq!(shown_ids(&app), ["A", "B"]);
+        app.set_sort(Sort::Newest);
+        assert_eq!(shown_ids(&app), ["B", "A"]);
+        assert_eq!(app.store.settings().sort, Sort::Newest);
     }
 
     #[test]

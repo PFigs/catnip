@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::Sort;
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -20,6 +22,7 @@ pub struct Settings {
     pub tree_width: Option<f32>,
     /// The conversation lists the oldest comment first, not the newest.
     pub oldest_first: bool,
+    pub sort: Sort,
 }
 
 const SETTINGS: &str = "catnip.settings";

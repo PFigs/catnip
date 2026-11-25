@@ -104,6 +104,8 @@ fn pr(n: u64, repo: &str, author: &str, title: &str, at: &str) -> Pr {
         draft: !n.is_multiple_of(3),
         head: format!("head{n}"),
         last_commit: at.into(),
+        updated: at.into(),
+        created: at.into(),
         additions: 3,
         deletions: 2,
         my_reviews: Vec::new(),

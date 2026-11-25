@@ -4,12 +4,14 @@ use std::borrow::Cow;
 
 use rune::{El, Spring, SpringPair, Transition, col, el, row, text};
 use rune_kit::shell::{RowStatus, Sidebar, SidebarHeader, SidebarRow};
-use rune_kit::{Button, ButtonVariant, IconButton, IconButtonVariant, Kit, TextInput, glyphs};
+use rune_kit::{
+    Button, ButtonVariant, IconButton, IconButtonVariant, Kit, Menu, MenuItem, TextInput, glyphs,
+};
 
-use super::{GEAR, REFRESH, ci_help, ci_icon, mark_icon, verdict_words};
+use super::{GEAR, REFRESH, SORT, ci_help, ci_icon, mark_icon, verdict_words};
 use crate::app::{self, App};
 use crate::github::MAX_PAGES;
-use crate::model::{self, Row, age, mark};
+use crate::model::{self, Row, Sort, age, mark};
 use crate::store;
 
 const ROW: f32 = 48.0;
@@ -132,8 +134,30 @@ fn search(s: &App, k: &Kit) -> El {
         .key("pr-search")
 }
 
-/// The refresh button left of the PR search.
-fn header(s: &App, k: &Kit) -> El {
+/// The sort button right of the PR search, with its menu.
+fn sort_menu(s: &App, k: &Kit, layer: &mut Vec<El>) -> El {
+    let trigger = IconButton::new(&SORT)
+        .variant(IconButtonVariant::GhostMuted)
+        .label("Sort")
+        .help(format!("Sort: {}", s.settings.sort.label()))
+        .expanded(s.sort_menu)
+        .on_press(|s: &mut App| s.sort_menu = !s.sort_menu)
+        .build(k)
+        .key("sort-menu");
+    let mut menu = Menu::new("sort").trigger(trigger).open(s.sort_menu);
+    for sort in Sort::ALL {
+        menu = menu.item(
+            MenuItem::new(sort.label())
+                .checked(s.settings.sort == sort)
+                .on_select(move |s: &mut App| s.set_sort(sort)),
+        );
+    }
+    menu.on_close(|s: &mut App| s.sort_menu = false)
+        .build(k, layer)
+}
+
+/// The refresh button left of the PR search, and the sort button right of it.
+fn header(s: &App, k: &Kit, layer: &mut Vec<El>) -> El {
     let refresh = IconButton::new(&REFRESH)
         .variant(IconButtonVariant::GhostMuted)
         .help("Refresh all")
@@ -147,13 +171,14 @@ fn header(s: &App, k: &Kit) -> El {
         .gap(4.0)
         .child(refresh)
         .child(search(s, k).grow(1.0))
+        .child(sort_menu(s, k, layer))
 }
 
 fn footer(s: &App, k: &Kit) -> El {
     let line = |t: String| text(t).font(k.ty.small).color(k.c.text_muted).wrap();
     let mut footer = col().gap(6.0).px(4.0).py(4.0);
     let query = s.pr_search.text.trim();
-    let found = || model::visible(&s.prs, &s.me, s.quick, &s.picked, query).len();
+    let found = || model::visible(&s.prs, &s.me, s.quick, &s.picked, query, s.settings.sort).len();
     let status = match (&s.error, s.loading, s.has_scope()) {
         (Some(e), _, _) => e.clone(),
         (None, true, _) => format!("Loading… {}", s.prs.len()),
@@ -192,13 +217,13 @@ fn footer(s: &App, k: &Kit) -> El {
     footer
 }
 
-pub fn view(s: &App, k: &Kit) -> El {
+pub fn view(s: &App, k: &Kit, layer: &mut Vec<El>) -> El {
     let now = store::now();
     let kit = k.clone();
     let bar = Sidebar::new()
         .label("Pull requests")
         .row_height(ROW)
-        .header(header(s, k))
+        .header(header(s, k, layer))
         .footer(footer(s, k));
     if s.loading && s.prs.is_empty() {
         return bar.child(boot_stack(s.boot_stack, k)).build(k);
