@@ -6,8 +6,9 @@ mod dialogs;
 mod drawer;
 mod sample;
 
-use rune::{Color, Cx, El, Icon, el, icon, row, text};
+use rune::{Color, Cx, El, Family, Icon, el, icon, row, text};
 use rune_kit::shell::{SidebarToggle, SplitView, Toolbar};
+use rune_kit::syntax::{Syntax, SyntaxTheme};
 use rune_kit::{
     Badge, BadgeVariant, Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant, Kit,
     Menu, MenuItem, PaletteSeed, SegmentedControl, Toast, ToastRegion, glyphs,
@@ -65,28 +66,181 @@ fn hex(s: &str) -> Color {
     rune::color::hex(s).unwrap_or(Color::TRANSPARENT)
 }
 
-/// GitHub's background, text and accent colours.
+/// GitHub's Primer colours for one mode.
+struct Primer {
+    bg: &'static str,
+    /// The background of panels, menus and code blocks.
+    muted: &'static str,
+    fg: &'static str,
+    fg_muted: &'static str,
+    fg_faint: &'static str,
+    border: &'static str,
+    border_muted: &'static str,
+    border_strong: &'static str,
+    accent: &'static str,
+    focus: &'static str,
+    /// A button at rest, hovered and pressed.
+    buttons: [&'static str; 3],
+    hover: &'static str,
+    pressed: &'static str,
+    success: &'static str,
+    danger: &'static str,
+    warning: &'static str,
+    /// The fill of the Approve button.
+    approve: &'static str,
+    /// GitHub's code colours.
+    code: [(Syntax, &'static str); 12],
+}
+
+const DARK: Primer = Primer {
+    bg: "#0d1117",
+    muted: "#151b23",
+    fg: "#f0f6fc",
+    fg_muted: "#9198a1",
+    fg_faint: "#656c76",
+    border: "#3d444d",
+    border_muted: "#3d444db3",
+    border_strong: "#656c76",
+    accent: "#4493f8",
+    focus: "#1f6feb",
+    buttons: ["#212830", "#262c36", "#2a313c"],
+    hover: "#656c7633",
+    pressed: "#656c7666",
+    success: "#3fb950",
+    danger: "#f85149",
+    warning: "#d29922",
+    approve: "#238636",
+    code: [
+        (Syntax::Keyword, "#ff7b72"),
+        (Syntax::Operator, "#ff7b72"),
+        (Syntax::String, "#a5d6ff"),
+        (Syntax::Link, "#a5d6ff"),
+        (Syntax::Number, "#79c0ff"),
+        (Syntax::Property, "#79c0ff"),
+        (Syntax::Comment, "#9198a1"),
+        (Syntax::Type, "#ffa657"),
+        (Syntax::Variable, "#ffa657"),
+        (Syntax::Function, "#d2a8ff"),
+        (Syntax::Attribute, "#7ee787"),
+        (Syntax::Regex, "#7ee787"),
+    ],
+};
+
+const LIGHT: Primer = Primer {
+    bg: "#ffffff",
+    muted: "#f6f8fa",
+    fg: "#1f2328",
+    fg_muted: "#59636e",
+    fg_faint: "#818b98",
+    border: "#d1d9e0",
+    border_muted: "#d1d9e0b3",
+    border_strong: "#818b98",
+    accent: "#0969da",
+    focus: "#0969da",
+    buttons: ["#f6f8fa", "#eff2f5", "#e6eaef"],
+    hover: "#818b981f",
+    pressed: "#818b9833",
+    success: "#1a7f37",
+    danger: "#d1242f",
+    warning: "#9a6700",
+    approve: "#1f883d",
+    code: [
+        (Syntax::Keyword, "#cf222e"),
+        (Syntax::Operator, "#cf222e"),
+        (Syntax::String, "#0a3069"),
+        (Syntax::Link, "#0a3069"),
+        (Syntax::Number, "#0550ae"),
+        (Syntax::Property, "#0550ae"),
+        (Syntax::Comment, "#59636e"),
+        (Syntax::Type, "#953800"),
+        (Syntax::Variable, "#953800"),
+        (Syntax::Function, "#6639ba"),
+        (Syntax::Attribute, "#116329"),
+        (Syntax::Regex, "#116329"),
+    ],
+};
+
+/// GitHub's UI fonts, as its CSS lists them. A machine without them keeps the kit's sans.
+const GITHUB_FONTS: Family = Family::Named("SF Pro Text, Segoe UI, Noto Sans, Helvetica, Arial");
+
+fn primer(dark: bool) -> &'static Primer {
+    if dark { &DARK } else { &LIGHT }
+}
+
+/// The kit in GitHub's colours, fonts and text sizes.
 fn kit(dark: bool) -> Kit {
-    let (bg, fg, accent) = if dark {
-        ("#0d1117", "#e6edf3", "#4493f8")
-    } else {
-        ("#ffffff", "#1f2328", "#0969da")
-    };
+    let p = primer(dark);
     let mut k = Kit::from_palette(PaletteSeed {
-        bg: hex(bg),
-        fg: hex(fg),
-        accent: hex(accent),
+        bg: hex(p.bg),
+        fg: hex(p.fg),
+        accent: hex(p.accent),
     });
     k.radius.sm = 6.0;
+    let c = &mut k.c;
+    c.text_muted = hex(p.fg_muted);
+    c.icon_muted = c.text_muted;
+    c.text_faint = hex(p.fg_faint);
+    c.icon_faint = c.text_faint;
+    c.border_base = hex(p.border);
+    c.border_weak = c.border_base;
+    c.border_muted = hex(p.border_muted);
+    c.border_strong = hex(p.border_strong);
+    c.border_focus = hex(p.focus);
+    c.layer_01 = hex(p.muted);
+    [c.layer_02, c.layer_03, c.layer_04] = p.buttons.map(hex);
+    c.bg_button_neutral = c.layer_02;
+    c.surface_raised = if dark { c.layer_01 } else { c.bg_base };
+    c.hover = hex(p.hover);
+    c.pressed = hex(p.pressed);
+    let bg = c.bg_base;
+    for (state, color) in [
+        (&mut c.success, p.success),
+        (&mut c.danger, p.danger),
+        (&mut c.warning, p.warning),
+        (&mut c.info, p.accent),
+    ] {
+        state.icon = hex(color);
+        state.fg = state.icon;
+        state.bg = bg.mix(state.icon, 0.15);
+        state.border = bg.mix(state.icon, 0.4);
+    }
+    let ty = &mut k.ty;
+    for (style, size) in [
+        (&mut ty.ui, 14.0),
+        (&mut ty.ui_medium, 14.0),
+        (&mut ty.ui_compact, 14.0),
+        (&mut ty.body, 14.0),
+        (&mut ty.body_medium, 14.0),
+        (&mut ty.text_small, 13.0),
+        (&mut ty.text_small_medium, 13.0),
+        (&mut ty.small, 12.0),
+        (&mut ty.small_medium, 12.0),
+        (&mut ty.text_xsmall, 12.0),
+        (&mut ty.text_xsmall_medium, 12.0),
+    ] {
+        style.family = GITHUB_FONTS;
+        style.size = size;
+    }
+    ty.mono.family = Family::SystemMono;
     k
 }
 
-/// The kit with its submit button in the success colour, for Approve.
+/// GitHub's colours for code in diffs and markdown.
+pub fn code_colours(k: &Kit) -> SyntaxTheme {
+    primer(k.dark)
+        .code
+        .iter()
+        .fold(SyntaxTheme::from_kit(k), |t, &(kind, c)| {
+            t.with(kind, hex(c))
+        })
+}
+
+/// The kit with its submit button in GitHub's green, for Approve.
 fn approve_kit(k: &Kit) -> Kit {
     let mut g = k.clone();
-    g.c.bg_icon_button_contrast = k.c.success.icon;
-    g.c.submit_fg = k.c.bg_base;
-    g.c.submit_icon = k.c.bg_base;
+    g.c.bg_icon_button_contrast = hex(primer(k.dark).approve);
+    g.c.submit_fg = k.c.white;
+    g.c.submit_icon = k.c.white;
     g
 }
 

@@ -8,8 +8,8 @@ use rune_kit::diff::{Annotation, DiffMode, DiffView};
 use rune_kit::shell::{SidebarRow, SidebarSection};
 use rune_kit::{
     Badge, BadgeVariant, Button, ButtonVariant, Collapsible, ControlSize, FileNode, IconButton,
-    IconButtonVariant, Kit, Markdown, SegmentedControl, TextArea, TextInput, Tree, TreeItem,
-    glyphs,
+    IconButtonVariant, Kit, Markdown, MarkdownStyle, SegmentedControl, TextArea, TextInput, Tree,
+    TreeItem, glyphs,
 };
 
 use crate::app::{self, App, Item};
@@ -270,9 +270,14 @@ fn entry(s: &App, key: String, e: &Entry, now: i64, k: &Kit) -> El {
     }
 }
 
+/// Markdown with GitHub's code colours.
+fn markdown(src: String, k: &Kit) -> Markdown {
+    Markdown::new(src).style(MarkdownStyle::from_kit(k).syntax_theme(super::code_colours(k)))
+}
+
 /// Markdown that a reader selects, and whose links open in the browser.
 fn prose(body: &str, k: &Kit) -> El {
-    Markdown::new(body.to_owned())
+    markdown(body.to_owned(), k)
         .selectable(true)
         .on_link_tx(|_: &mut App, url, tx| {
             let _ = tx.open_url(url);
@@ -893,7 +898,7 @@ fn thread_label(t: &Thread, on_line: bool) -> Option<String> {
 fn code_made_on(hunk: &str, k: &Kit) -> El {
     let lines: Vec<&str> = hunk.lines().filter(|l| !l.starts_with("@@")).collect();
     let tail = lines[lines.len().saturating_sub(4)..].join("\n");
-    Markdown::new(format!("```diff\n{tail}\n```"))
+    markdown(format!("```diff\n{tail}\n```"), k)
         .selectable(true)
         .build(k)
         .key("code-made-on")
@@ -989,7 +994,7 @@ fn draft(s: &App, n: usize, k: &Kit) -> El {
         .w_full()
         .gap(4.0)
         .child(top)
-        .child(Markdown::new(d.body.clone()).selectable(true).build(k));
+        .child(markdown(d.body.clone(), k).selectable(true).build(k));
     card(k, body)
 }
 
@@ -1151,6 +1156,7 @@ fn diff(s: &App, k: &Kit) -> El {
     let kit = k.clone();
     let header_kit = k.clone();
     DiffView::new(|s: &App| &s.diff, |s: &mut App| &mut s.diff)
+        .syntax_theme(super::code_colours(k))
         .annotation(move |s: &App, a: &Annotation| note(s, a, &kit))
         .header_actions(move |s: &App, file| file_notes(s, file, &header_kit))
         .on_comment(|s: &mut App, lines, _| s.start_comment(lines))
