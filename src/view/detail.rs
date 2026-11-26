@@ -1157,6 +1157,7 @@ fn diff(s: &App, k: &Kit) -> El {
     let header_kit = k.clone();
     DiffView::new(|s: &App| &s.diff, |s: &mut App| &mut s.diff)
         .syntax_theme(super::code_colours(k))
+        .plain_added_files(true)
         .annotation(move |s: &App, a: &Annotation| note(s, a, &kit))
         .header_actions(move |s: &App, file| file_notes(s, file, &header_kit))
         .on_comment(|s: &mut App, lines, _| s.start_comment(lines))
