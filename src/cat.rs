@@ -319,7 +319,7 @@ impl Game {
         };
         let x = edge.max(last) + 360.0 + (self.random() % 400) as f32;
         let mut o = Obstacle::new(kind, x);
-        o.auto_zap = kind == Kind::Bug && self.random() % 3 == 0;
+        o.auto_zap = kind == Kind::Bug && self.random().is_multiple_of(3);
         self.obstacles.push(o);
     }
 
